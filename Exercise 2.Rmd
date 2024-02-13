@@ -1,0 +1,397 @@
+---
+title: "Exercise 2"
+author: "Mingxuan Zou"
+date: "2024-02-12"
+output: html_document
+---
+
+#### 1. Setup
+
+```{r setup}
+# Use English for locale settings
+Sys.setlocale("LC_ALL", "en_US.UTF-8")
+
+# Necessary packages
+library(academictwitteR) # for fetching Twitter data
+library(tidyverse) # loads dplyr, ggplot2, and others
+library(readr) # more informative and easy way to import data
+library(stringr) # to handle text elements
+library(tidytext) # includes set of functions useful for manipulating text
+library(quanteda) # includes functions to implement Lexicoder
+library(textdata) # manipulate text data
+```
+
+#### 2. Load the data
+
+```{r import the dataset}
+# Download the prepared dataset directly
+tweets  <- readRDS(gzcon(url("https://github.com/cjbarrie/CTA-ED/blob/main/data/sentanalysis/newstweets.rds?raw=true")))
+```
+
+```{r alternative approach: Tweet token required}
+# Define the dataset by combining data from 8 newspapers
+# newspapers = c("TheSun", "DailyMailUK", "MetroUK", "DailyMirror", "EveningStandard", "thetimes", "Telegraph", "guardian")
+
+# Retrieve tweets that match the specified range.
+#tweets <- 
+#  get_all_tweets(
+#    users = newspapers,
+#    start_tweets = "2020-01-01T00:00:00Z",
+#    end_tweets = "2020-05-01T00:00:00Z",
+#    data_path = "data/sentanalysis/",
+#    n = Inf,
+#  )
+
+# Aggregate the retrieved data into ONE dataset
+#tweets <- 
+#  bind_tweets(
+#    data_path = "data/sentanalysis",
+#    output_format = "tidy"
+#  )
+
+# Save the dataset into the original file path
+#saveRDS(tweets, "data/sentanalysis/newstweets.rds")
+
+# Download the saved dataset
+#tweets <- readRDS("data/sentanalysis/newstweets.rds")
+
+```
+
+#### 3. Inspect and Filter the data
+
+```{r inspect and filter the data}
+# Inspect the head and column names
+head(tweets)
+colnames(tweets)
+
+# Only keep the data of interest
+tweets <- tweets %>% 
+  select(user_username, text, created_at, user_name, retweet_count, like_count, quote_count) %>% 
+  rename(username = user_username,
+         newspaper = user_name, 
+         tweet = text)
+
+# Tidy the text
+tidy_tweets <- tweets %>% 
+  mutate(desc = tolower(tweet)) %>% 
+  unnest_tokens(word, desc) %>% # tokenizing the content in 'desc', and placing the output in 'word'
+  filter(str_detect(word, "[a-z]")) # filter out text
+
+tidy_tweets <- tidy_tweets %>% 
+  filter(!word %in% stop_words$word) # remove stop words
+```
+
+#### 4. Get sentiment dictionaries
+
+```{r get sentiment dictionaries}
+# Get sentiments from AFINN, bing, and nrc
+get_sentiments("afinn") # from -5(negative) to +5(positive)
+get_sentiments("bing") # YES/NO for a set of sentiments
+get_sentiments("nrc") # positive or negative
+
+# Filter the texts of a sentiment
+nrc_fear <- get_sentiments("nrc") %>%
+  filter(sentiment == "fear")
+
+# Filter out tweets with fear sentiment
+tidy_tweets %>% 
+  inner_join(nrc_fear) %>%
+  count(word, sort = TRUE)
+```
+
+#### 5. Sentiment trends over time
+
+```{r longitudinal anlysis}
+# Get date in format and order
+tidy_tweets$date <- as.Date(tidy_tweets$created_at)
+tidy_tweets <- tidy_tweets %>%
+  arrange(date)
+tidy_tweets$order <- 1:nrow(tidy_tweets) # Create a new column 'order' than contain sequence number of the row
+
+# 1. Calculate and plot the bing sentiment scores over time
+tidy_tweets %>%
+  inner_join(get_sentiments("bing")) %>% 
+  count(date, index = order %/% 1000, sentiment) %>% # index words in order over every 1000 rows; multiple observations for dates having more than 1000 words
+  spread(sentiment, n, fill = 0) %>% # convert scores into separate columns
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment)) + 
+  geom_point(alpha=0.5) + # alpha: transparency
+  geom_smooth(method = loess, alpha = 0.25) + # loess: adds a smoothed line with a semi-transparent confidence interval shading, making it visually less dominant and allowing for better visibility of other elements on the plot.
+  ylab("bing sentiment")
+
+# 2. Calculate and plot the nrc sentiment scores over time
+tidy_tweets %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("nrc sentiment")
+
+# 3. Calculate and plot the afinn sentiment scores over time
+tidy_tweets %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(date, index = order %/% 1000) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("afinn sentiment")
+```
+
+#### 6. Domain-specific lexicons
+
+```{r mortality dictionary}
+# Creating a dictionary (data.frame object) of 'mortality' terms
+word <- c('death', 'illness', 'hospital', 'life', 'health', 'fatality', 'morbidity', 'deadly', 'dead', 'victim')
+value <- c(1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+mordict <- data.frame(word, value)
+mordict
+
+# (Cont.) 4. Calculate and plot the mordict sentiment scores over time
+tidy_tweets %>%
+  inner_join(mordict) %>%
+  group_by(date, index = order %/% 1000) %>% 
+  summarise(morwords = sum(value)) %>% 
+  ggplot(aes(date, morwords)) +
+  geom_bar(stat= "identity")
+  ylab("mortality words")
+# By looking at the absolute scale (count), the effect of denominator (total amount of text) is overlooked.
+```
+
+```{r a preferable approach}
+mordict <- c('death', 'illness', 'hospital', 'life', 'health', 'fatality', 'morbidity', 'deadly', 'dead', 'victim')
+
+# Get total tweets per day
+totals <- tidy_tweets %>% 
+  mutate(obs=1) %>% # create a new column and assign value=1 to every row of it
+  group_by(date) %>% 
+  summarise(sum_words = sum(obs))
+
+# Filter and manipulate the data
+tidy_tweets %>% 
+  mutate(obs=1) %>% 
+  filter(
+    grepl(
+      paste0(mordict, collapse = '|'), # constructs a single string from the elements of the mordict vector, separating each element with the | character
+      word, 
+      ignore.case = T
+      )
+    ) %>%
+  group_by(date) %>%
+  summarise(sum_mwords = sum(obs)) %>% 
+  full_join(totals, word, by="date") %>% # include dates that appear in the “totals” data frame that do not appear when we filter for mortality words
+  mutate(
+    sum_mwords = ifelse(is.na(sum_mwords), 0, sum_mwords), # replace na(missing values) with 0
+    pctmwords = sum_mwords/sum_words
+    ) %>% 
+# Plot
+  ggplot(aes(date, pctmwords)) + 
+  geom_point(alpha=0.5) + 
+  geom_smooth(method= loess, alpha=0.25) +
+  xlab('Date') + ylab("% mortality words")
+```
+
+#### 7. Using Lexicoder
+
+```{r examining affective news}
+# Again, create the date variable
+tweets$date <- as.Date(tweets$created_at)
+
+# Create a corpus with tweets being the text and date being the column names (variables)
+tweet_corpus <- corpus(tweets, text_field = "tweet", docvars = "date")
+
+# Tokenize the text
+toks_news <- tokens(tweet_corpus, remove_punct = TRUE)
+
+# Select only the 'negative' and 'positive' categories
+data_dictionary_LSD2015_pos_neg <- data_dictionary_LSD2015[1:2]
+
+# Look up the dictionary that has tokens with scores
+toks_news_lsd <- tokens_lookup(toks_news, dictionary = data_dictionary_LSD2015_pos_neg)
+
+# Instead of a long list, generate a doc feature matrix from this by date.
+dfmat_news_lsd <- dfm(toks_news_lsd) %>% 
+  dfm_group(groups = date)
+
+# Plot positive and negative valence over time
+matplot(dfmat_news_lsd$date, dfmat_news_lsd, 
+  type = "l", # indicates for a line plot
+  lty = 1, # line type = solid
+  col = 1:2,
+  xlab = '', ylab = 'Frequency')
+grid()
+legend("bottomright", col = 1:2, legend = colnames(dfmat_news_lsd), lty = 1, cex = 0.5, pt.cex=0.5, seg.len = 0.5, bg = "white")
+
+# Plot overall sentiment (= positive - negative) over time
+plot(
+  dfmat_news_lsd$date, 
+  dfmat_news_lsd[,'positive'] - 
+  dfmat_news_lsd[,'negative'], 
+  type = "l", 
+  ylab = "Sentiment", 
+  xlab = "")
+grid()
+abline(h = 0, lty = 2)
+
+```
+
+```{r alternative tidy format}
+#negative <- dfmat_news_lsd@x[1:121]
+#positive <- dfmat_news_lsd@x[122:242]
+#date <- dfmat_news_lsd@Dimnames$docs
+
+#tidy_sent <- as.data.frame(cbind(negative, positive, date))
+
+#tidy_sent$negative <- as.numeric(tidy_sent$negative)
+#tidy_sent$positive <- as.numeric(tidy_sent$positive)
+#tidy_sent$sentiment <- tidy_sent$positive - #tidy_sent$negative
+#tidy_sent$date <- as.Date(tidy_sent$date)
+
+#tidy_sent %>%
+#  ggplot() +
+#  geom_line(aes(date, sentiment))
+```
+
+#### Questions
+
+##### 1.Take a subset of the tweets data by “user_name” These names describe the name of the newspaper source of the Twitter account. Do we see different sentiment dynamics if we look only at different newspaper sources?
+
+```{r sentiment dynamics by newspaper}
+# 1. Calculate and plot the bing sentiment scores over time
+tidy_tweets %>%
+  inner_join(get_sentiments("bing")) %>% 
+  count(date, index = order %/% 1000, newspaper, sentiment) %>% # index words in order over every 1000 rows; multiple observations for dates having more than 1000 words
+  spread(sentiment, n, fill = 0) %>% # convert scores into separate columns
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment, color = newspaper)) +
+  geom_point(alpha=0.2, size = 1) +
+  geom_smooth(method= 'auto', alpha = 0.25) + # loess: adds a smoothed line with a semi-transparent confidence interval shading, making it visually less dominant and allowing for better visibility of other elements on the plot.
+  coord_cartesian(ylim = c(-20,0)) + # Zoom in for more visible smooth curves. coord_catesian() sets limits on the coordinate system without changing the underlying data.
+  #coord_cartesian(ylim = c(-6,0)) + # Take a closer look at the overlapping curves with TheMirror excluded.
+  labs( x = 'Date', 
+        y = 'bing sentiment', 
+        title = "Sentiment Dynamics by Newspaper Source", 
+        color = "Newspaper")
+
+# 2. Calculate and plot the nrc sentiment scores over time
+tidy_tweets %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(date, index = order %/% 1000, newspaper, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment, color = newspaper)) +
+  geom_point(alpha=0.2, size = 1) +
+  geom_smooth(method= 'auto', alpha = 0.25) + 
+  coord_cartesian(ylim = c(-10,10)) + 
+  #coord_cartesian(ylim = c(-2,4)) + 
+  labs( x = 'Date', 
+        y = 'nrc sentiment', 
+        title = "Sentiment Dynamics by Newspaper Source", 
+        color = "Newspaper") 
+
+# 3. Calculate and plot the afinn sentiment scores over time
+tidy_tweets %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(date, index = order %/% 1000, newspaper) %>%
+  summarise(sentiment = sum(value)) %>% 
+  ggplot(aes(date, sentiment, color = newspaper)) +
+  geom_point(alpha=0.2, size = 1) +
+  geom_smooth(method= 'auto', alpha = 0.25) + 
+  coord_cartesian(ylim = c(-40,0)) + 
+  #coord_cartesian(ylim = c(-11,1)) +
+  labs( x = 'Date', 
+        y = 'affin sentiment', 
+        title = "Sentiment Dynamics by Newspaper Source", 
+        color = "Newspaper")
+```
+
+##### 2.Build your own (minimal) dictionary-based filter technique and plot the result
+
+```{r China-related dictionary}
+china_related_word <- c('China', 'Chinese','Mandarin', 'Beijing', 'Shanghai', 'Hong Kong', 'Taiwan', 'Huawei', 'Renminbi', 'Belt and Road', 'Xi Jinping', 'Communist Party of China')
+
+# Get total tweets per day
+totals <- tidy_tweets %>% 
+  mutate(obs=1) %>% # create a new column and assign value=1 to every row of it
+  group_by(date) %>% 
+  summarise(sum_words = sum(obs))
+
+# Filter and manipulate the data
+tidy_tweets %>% 
+  mutate(obs=1) %>% 
+  filter(
+    grepl(
+      paste0(china_related_word, collapse = '|'), # constructs a single string from the elements of the mordict vector, separating each element with the | character
+      word, 
+      ignore.case = T
+      )
+    ) %>%
+  group_by(date) %>%
+  summarise(sum_mwords = sum(obs)) %>% 
+  full_join(totals, word, by="date") %>% # include dates that appear in the “totals” data frame that do not appear when we filter for mortality words
+  mutate(
+    sum_mwords = ifelse(is.na(sum_mwords), 0, sum_mwords), # replace na(missing values) with 0
+    pctmwords = sum_mwords/sum_words
+    ) %>% 
+# Plot
+  ggplot(aes(date, pctmwords)) + 
+  geom_point(alpha=0.5) + 
+  geom_smooth(method= 'auto', alpha=0.25) +
+  xlab('Date') + ylab("% China-related words")
+```
+
+##### 3.Apply the Lexicoder Sentiment Dictionary to the news tweets, but break down the analysis by newspaper
+
+```{r Lexicoder analysis by newspaper}
+# Again, create the date variable
+tweets$date <- as.Date(tweets$created_at)
+
+# Create a corpus with tweets being the text, while date and newspaper being the document variables
+
+# Attempt 1: tweet_corpus <- corpus(tweets, text_field = "tweet", docvars = 'date', 'newspaper')
+# Error: Doc names must be unique, so combine date and newspaper into a single vector
+
+# Attempt 2: tweet_corpus <- corpus(tweets, text_field = "tweet", docvars = c('date', 'newspaper'))
+# Error: groups must have length ndoc(x)
+
+# Correct format:(https://stackoverflow.com/questions/67687100/quanteda-group-documents-by-multiple-variables)
+# groups = interaction(var1, var2)
+
+# Tokenize the text
+toks_news <- tokens(tweet_corpus, remove_punct = TRUE)
+
+# Select only the 'negative' and 'positive' categories
+data_dictionary_LSD2015_pos_neg <- data_dictionary_LSD2015[1:2]
+
+# Look up the dictionary that has tokens with scores
+toks_news_lsd <- tokens_lookup(toks_news, dictionary = data_dictionary_LSD2015_pos_neg)
+
+# Instead of a long list, generate a doc feature matrix (dfm) from this by both date and newspaper.
+dfmat_news_lsd <- dfm(toks_news_lsd) %>% 
+  dfm_group(groups = interaction(date,newspaper)) # Incorrect: 'date', 'newspaper'
+
+# Plot positive and negative valence over time
+matplot(dfmat_news_lsd$date, dfmat_news_lsd, 
+        type = 'l', lty = 1, col = 1:2, 
+        xlab = '', ylab = 'Frequency'
+        ) 
+legend("topleft", col = 1:2, 
+       legend = colnames(dfmat_news_lsd), lty = 1, 
+       cex = 0.5, pt.cex=0.5, seg.len = 0.5, # parameter for resizing the legend
+       bg = "white")
+grid()
+
+# plot overall sentiment (positive  - negative) over time
+dfmat_news_lsd$overall_sentiment <- dfmat_news_lsd[,"positive"] - dfmat_news_lsd[,"negative"]
+
+plot(dfmat_news_lsd$date, 
+     dfmat_news_lsd$overall_sentiment, 
+     type = "l", 
+     xlab = "", ylab = "Sentiment"
+     )
+grid()
+abline(h = 0, lty = 2)
+```
